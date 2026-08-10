@@ -1,0 +1,51 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+    # 1. Загружаем код
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. Логинимся в GitHub Container Registry (ghcr.io)
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # 3. Собираем и пушим образ с тегом, основанным на SHA коммита[reference:7]
+    - name: Build and push Docker image
+      run: |
+        IMAGE_NAME=ghcr.io/${{ github.repository }}/inventree
+        IMAGE_TAG=${GITHUB_SHA::7}
+        docker build -t $IMAGE_NAME:$IMAGE_TAG -t $IMAGE_NAME:latest ./services/inventree
+        docker push $IMAGE_NAME:$IMAGE_TAG
+        docker push $IMAGE_NAME:latest
+        echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+    # 4. Обновляем манифест с новым тегом образа[reference:8]
+    - name: Update Kubernetes manifest
+      run: |
+        sed -i "s|image: .*|image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}|g" deploy/overlays/dev/deployment.yaml
+
+    # 5. Коммитим и пушим обновлённый манифест обратно в репозиторий[reference:9]
+    - name: Commit and push updated manifest
+      run: |
+        git config --global user.email "actions@github.com"
+        git config --global user.name "GitHub Actions"
+        git add deploy/overlays/dev/deployment.yaml
+        git commit -m "Update image to ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" || echo "No changes to commit"
+        git push
