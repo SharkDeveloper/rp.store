@@ -2,7 +2,6 @@
 
 import base64
 import os
-import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -22,6 +21,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 import pint.errors
+import requests_mock
 from djmoney.contrib.exchange.exceptions import MissingRate
 from djmoney.contrib.exchange.models import Rate, convert_money
 from djmoney.money import Money
@@ -1171,8 +1171,26 @@ class TestVersionNumber(TestCase):
 class CurrencyTests(TestCase):
     """Unit tests for currency / exchange rate functionality."""
 
-    def test_rates(self):
+    RATES = {
+        'AUD': 1.5,
+        'CAD': 1.35,
+        'CNY': 7.2,
+        'EUR': 0.9,
+        'GBP': 0.8,
+        'JPY': 150.0,
+        'NZD': 1.65,
+        'USD': 1.0,
+    }
+
+    @requests_mock.Mocker()
+    def test_rates(self, requests_mocker):
         """Test exchange rate update."""
+        # Patch setting for remote url
+        response_rates = {code: self.RATES.get(code, 1.0) for code in currency_codes()}
+        requests_mocker.get(
+            'https://api.frankfurter.app/latest', json={'rates': response_rates}
+        )
+
         # Initially, there will not be any exchange rate information
         rates = Rate.objects.all()
 
@@ -1185,24 +1203,10 @@ class CurrencyTests(TestCase):
         with self.assertRaises(MissingRate):
             convert_money(Money(100, 'AUD'), 'USD')
 
-        update_successful = False
+        InvenTree.tasks.update_exchange_rates()
 
-        # Note: the update sometimes fails in CI, let's give it a few chances
-        for idx in range(10):
-            InvenTree.tasks.update_exchange_rates()
-
-            rates = Rate.objects.all()
-
-            if rates.count() == len(currency_codes()):
-                update_successful = True
-                break
-
-            else:  # pragma: no cover
-                print('Exchange rate update failed - retrying')
-                print(f'Expected {currency_codes()}, got {[a.currency for a in rates]}')
-                time.sleep(1 + idx)
-
-        self.assertTrue(update_successful)
+        rates = Rate.objects.all()
+        self.assertEqual(rates.count(), len(currency_codes()))
 
         # Now that we have some exchange rate information, we can perform conversions
 
@@ -1674,6 +1678,27 @@ class SanitizerTest(TestCase):
         # Test that invalid string is cleaned
         self.assertNotEqual(dangerous_string, sanitize_svg(dangerous_string))
 
+    def test_svg_sanitizer_smil_bypass(self):
+        """Test that SMIL animation elements cannot be used to smuggle a javascript: URL.
+
+        A <set>/<animate>/<animateTransform> element can assign a `javascript:` value to
+        another element's `href`/`xlink:href` at render time via its `to`/`from`/`values`
+        attribute. These attributes are not treated as URLs by the sanitizer, so simply
+        stripping `javascript:` from `href`-like attributes is not sufficient - the
+        elements themselves must not be permitted.
+        """
+        malicious_string = """<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+        <a xlink:href="https://example.com">
+        <set attributeName="xlink:href" to="javascript:alert(document.domain)" />
+        <text x="10" y="20">Click me</text>
+        </a>
+        </svg>"""
+
+        cleaned = sanitize_svg(malicious_string)
+
+        self.assertNotIn('javascript:', cleaned)
+        self.assertNotIn('<set', cleaned)
+
 
 class MagicLoginTest(InvenTreeTestCase):
     """Test magic login token generation."""
@@ -1707,6 +1732,18 @@ class MagicLoginTest(InvenTreeTestCase):
         self.assertEqual(resp.url, '/api/auth/login-redirect/')
         # And we should be logged in again
         self.assertEqual(resp.wsgi_request.user, self.user)
+
+    def test_duplicate_email(self):
+        """Test that duplicate email addresses do not raise a server error."""
+        User = get_user_model()
+        User.objects.create_user(
+            username='duplicate', email=self.user.email, password='password'
+        )
+
+        resp = self.client.post(reverse('sesame-generate'), {'email': self.user.email})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {'status': 'ok'})
+        self.assertEqual(len(mail.outbox), 0)
 
 
 class MaintenanceModeTest(InvenTreeTestCase):

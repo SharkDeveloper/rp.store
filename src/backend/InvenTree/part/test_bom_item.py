@@ -595,3 +595,162 @@ class BomItemTest(TestCase):
         check(valid=False)
 
         self.assertIsNotNone(assembly.bom_checked_date)
+
+    def test_piece_count_default(self):
+        """Test that piece_count defaults to 1 and does not change existing behavior."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        # Default value should be 1
+        self.assertEqual(item.piece_count, 1)
+
+        # With piece_count=1, get_required_quantity should behave as before
+        item.set_quantity(10)
+        item.attrition = 0
+        item.setup_quantity = 0
+        item.rounding_multiple = None
+        item.save()
+
+        # 10 * 1 (piece_count) * 5 (build_quantity) = 50
+        self.assertEqual(item.get_required_quantity(5), 50)
+
+    def test_piece_count_multiplier(self):
+        """Test that piece_count correctly multiplies the required quantity.
+
+        Example: Cutting wire into 200mm lengths, need 10 pieces per assembly.
+        quantity=200 (mm per piece), piece_count=10, build_quantity=5
+        Total = 200 * 10 * 5 = 10000 mm
+        """
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        item.set_quantity(200)
+        item.piece_count = 10
+        item.attrition = 0
+        item.setup_quantity = 0
+        item.rounding_multiple = None
+        item.save()
+
+        # 200 * 10 * 5 = 10000
+        self.assertEqual(item.get_required_quantity(5), 10000)
+
+        # 200 * 10 * 1 = 2000
+        self.assertEqual(item.get_required_quantity(1), 2000)
+
+        # 200 * 10 * 10 = 20000
+        self.assertEqual(item.get_required_quantity(10), 20000)
+
+    def test_piece_count_with_attrition(self):
+        """Test piece_count combined with attrition percentage."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        item.set_quantity(100)
+        item.piece_count = 5
+        item.attrition = 10  # 10% attrition
+        item.setup_quantity = 0
+        item.rounding_multiple = None
+        item.save()
+
+        # Base: 100 * 5 * 2 = 1000
+        # With 10% attrition: 1000 * 1.10 = 1100
+        self.assertEqual(item.get_required_quantity(2), 1100)
+
+    def test_piece_count_with_setup_quantity(self):
+        """Test piece_count combined with setup_quantity."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        item.set_quantity(50)
+        item.piece_count = 4
+        item.attrition = 0
+        item.setup_quantity = 20
+        item.rounding_multiple = None
+        item.save()
+
+        # Base: 50 * 4 * 3 = 600
+        # With setup_quantity: 600 + 20 = 620
+        self.assertEqual(item.get_required_quantity(3), 620)
+
+    def test_piece_count_with_rounding(self):
+        """Test piece_count combined with rounding_multiple."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        item.set_quantity(7)
+        item.piece_count = 3
+        item.attrition = 0
+        item.setup_quantity = 0
+        item.rounding_multiple = 25
+        item.save()
+
+        # Base: 7 * 3 * 2 = 42
+        # Rounded up to nearest multiple of 25: 50
+        self.assertEqual(item.get_required_quantity(2), 50)
+
+    def test_piece_count_validation(self):
+        """Test that piece_count rejects invalid values (0, negative)."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+
+        # piece_count = 0 should be rejected (MinValueValidator(1))
+        item.piece_count = 0
+        with self.assertRaises(django_exceptions.ValidationError):
+            item.full_clean()
+
+        # piece_count = -1 should also be rejected
+        item.piece_count = -1
+        with self.assertRaises(django_exceptions.ValidationError):
+            item.full_clean()
+
+        # piece_count = 1 is the minimum valid value
+        item.piece_count = 1
+        item.full_clean()  # Should not raise
+
+        # piece_count = 100 is a valid value
+        item.piece_count = 100
+        item.full_clean()  # Should not raise
+
+    def test_item_hash_piece_count_default(self):
+        """Regression test: a default 'piece_count' must not affect the checksum.
+
+        The 'piece_count' field is ignored by get_item_hash() when it holds its
+        default value (1), so that checksums calculated before this field was
+        added remain valid. Simulate a "legacy" checksum (calculated without
+        'piece_count' in the hashed fields) and confirm it still matches the
+        checksum calculated by the current code for a default piece_count.
+        """
+        item = BomItem.objects.get(part=100, sub_part=50)
+        item.piece_count = 1
+        item.save()
+
+        current_hash = item.get_item_hash()
+
+        legacy_fields = [f for f in item.hash_fields() if f != 'piece_count']
+
+        with mock.patch.object(BomItem, 'hash_fields', return_value=legacy_fields):
+            legacy_hash = item.get_item_hash()
+
+        self.assertEqual(current_hash, legacy_hash)
+
+        # A checksum validated under the "legacy" hashing scheme must still
+        # validate correctly against the current (piece_count aware) scheme
+        item.checksum = legacy_hash
+        item.save()
+        self.assertTrue(item.is_line_valid)
+
+    def test_item_hash_piece_count_non_default(self):
+        """A non-default 'piece_count' value must change the checksum hash."""
+        item = BomItem.objects.get(part=100, sub_part=50)
+        item.piece_count = 1
+        item.save()
+
+        # Validate the BOM item hash with the default piece_count
+        item.validate_hash()
+        self.assertTrue(item.is_line_valid)
+
+        # Changing piece_count away from the default must invalidate the checksum
+        item.piece_count = 5
+        item.save()
+        self.assertFalse(item.is_line_valid)
+
+        h_non_default = item.get_item_hash()
+
+        item.piece_count = 1
+        h_default = item.get_item_hash()
+
+        self.assertNotEqual(h_default, h_non_default)
