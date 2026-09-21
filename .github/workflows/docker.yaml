@@ -26,31 +26,32 @@ jobs:
           persist-credentials: false
 
       # ---------------------------------------------------------
-      # ЭТАП 1: Сборка и минимальная проверка, что образ запускается
+      # ЭТАП 1: Сборка и минимальная проверка запуска
       # ---------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and Verify Launch
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./contrib/container/Dockerfile
+          target: production
+          platforms: linux/amd64
+          load: true
+          tags: inventree-test:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image launches
         run: |
-          # Собираем production-образ
-          docker build . --target production --tag inventree-test -f contrib/container/Dockerfile
-          
-          # Минимальная проверка: запускаем контейнер и выполняем базовые команды
-          # Если образ "битый", эти команды завершатся с ошибкой и остановят workflow
-          docker run --rm inventree-test invoke version
-          docker run --rm inventree-test gunicorn --version
-          
+          docker run --rm inventree-test:latest invoke version
+          docker run --rm inventree-test:latest gunicorn --version
           echo "✅ Образ успешно собран и запускается."
 
       # ---------------------------------------------------------
       # ЭТАП 2: Публикация образа (пропускается в Pull Request)
       # ---------------------------------------------------------
-      - name: Set up QEMU
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@v3
-
       - name: Log into registry ghcr.io
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -78,7 +79,9 @@ jobs:
           context: .
           file: ./contrib/container/Dockerfile
           target: production
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
