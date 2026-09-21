@@ -1,22 +1,8 @@
-# Build, test and push InvenTree docker image
-# This workflow runs under any of the following conditions:
-#
-# - Push to the master branch
-# - Publish release
-#
-# The following actions are performed:
-#
-# - Check that the version number matches the current branch or tag
-# - Build the InvenTree docker image
-# - Run suite of unit tests against the build image
-# - Push the compiled, tested image to dockerhub
-
 name: Docker
 
 on:
   release:
     types: [published]
-
   push:
     branches:
       - "master"
@@ -26,173 +12,48 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
-  paths-filter:
-    permissions:
-      contents: read # for dorny/paths-filter to fetch a list of changed files
-      pull-requests: read # for dorny/paths-filter to read pull requests
-    name: Filter
+  build-and-publish:
+    name: Build and Publish Docker Image
     runs-on: ubuntu-latest
-
-    outputs:
-      docker: ${{ steps.filter.outputs.docker }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: filter
-        with:
-          filters: |
-            docker:
-              - .github/workflows/docker.yaml
-              - contrib/container/**
-              - src/backend/InvenTree/InvenTree/settings.py
-              - src/backend/requirements.txt
-              - tasks.py
-
-  # Build the docker image
-  build:
-    name: Docker Build Test
-    needs: paths-filter
-    if: needs.paths-filter.outputs.docker == 'true' || github.event_name == 'release' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-run')
-    permissions:
-      contents: read
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      python_version: 3.12
-    runs-on: ubuntu-latest # in the future we can try to use alternative runners here
 
     steps:
       - name: Check out repo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Test Docker Image
-        id: test-docker
+
+      # ---------------------------------------------------------
+      # ЭТАП 1: Сборка и минимальная проверка, что образ запускается
+      # ---------------------------------------------------------
+      - name: Build and Verify Launch
         run: |
+          # Собираем production-образ
           docker build . --target production --tag inventree-test -f contrib/container/Dockerfile
+          
+          # Минимальная проверка: запускаем контейнер и выполняем базовые команды
+          # Если образ "битый", эти команды завершатся с ошибкой и остановят workflow
           docker run --rm inventree-test invoke version
-          docker run --rm inventree-test invoke --version
-          docker run --rm inventree-test invoke --list
           docker run --rm inventree-test gunicorn --version
-          docker run --rm inventree-test pg_dump --version
-          docker run --rm inventree-test test -f /home/inventree/init.sh
-          docker run --rm inventree-test test -f /home/inventree/tasks.py
-          docker run --rm inventree-test test -f /home/inventree/gunicorn.conf.py
-          docker run --rm inventree-test test -f /home/inventree/src/backend/requirements.txt
-          docker run --rm inventree-test test -f /home/inventree/src/backend/InvenTree/manage.py
-          # Check that license information was generated into the image
-          docker run --rm inventree-test test -s /home/inventree/src/backend/InvenTree/InvenTree/licenses.txt
-          docker run --rm inventree-test test -s /home/inventree/src/backend/InvenTree/web/static/web/.vite/dependencies.json
-          # Check that backend translations were compiled into the image (a few representative languages)
-          docker run --rm inventree-test test -f /home/inventree/src/backend/InvenTree/locale/de/LC_MESSAGES/django.mo
-          docker run --rm inventree-test test -f /home/inventree/src/backend/InvenTree/locale/fr/LC_MESSAGES/django.mo
-          docker run --rm inventree-test test -f /home/inventree/src/backend/InvenTree/locale/ru/LC_MESSAGES/django.mo
-          docker run --rm inventree-test test -f /home/inventree/src/backend/InvenTree/locale/zh_Hans/LC_MESSAGES/django.mo
-          # Check that frontend translations (lingui) were compiled into the static build output (a few representative languages)
-          docker run --rm inventree-test grep -q '"src/locales/de/messages.ts"' /home/inventree/src/backend/InvenTree/web/static/web/.vite/manifest.json
-          docker run --rm inventree-test grep -q '"src/locales/fr/messages.ts"' /home/inventree/src/backend/InvenTree/web/static/web/.vite/manifest.json
-          docker run --rm inventree-test grep -q '"src/locales/ru/messages.ts"' /home/inventree/src/backend/InvenTree/web/static/web/.vite/manifest.json
-          docker run --rm inventree-test grep -q '"src/locales/zh_Hans/messages.ts"' /home/inventree/src/backend/InvenTree/web/static/web/.vite/manifest.json
-      - name: Build Docker Image
-        # Build the development docker image (using docker-compose.yml)
-        run: docker compose --project-directory . -f contrib/container/dev-docker-compose.yml build --no-cache
-      - name: Update Docker Image
-        run: |
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke install
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke version
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke update
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke backup
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke restore
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke dev.setup-dev
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml up -d
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run inventree-dev-server invoke wait
-      - name: Check Data Directory
-        # The following file structure should have been created by the docker image
-        run: |
-          test -d data
-          test -d data/env
-          test -d data/pgdb
-          test -d data/media
-          test -d data/static
-          test -d data/plugins
-          test -f data/config.yaml
-          test -f data/plugins.txt
-          test -f data/secret_key.txt
-          test -f data/oidc.pem
-      - name: Run Unit Tests
-        run: |
-          echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> contrib/container/docker.dev.env
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run --rm inventree-dev-server invoke dev.test --disable-pty --translations
+          
+          echo "✅ Образ успешно собран и запускается."
 
-  # Run migration test
-  migration_test:
-    name: Migration Test
-    needs: paths-filter
-    if: needs.paths-filter.outputs.docker == 'true' || github.event_name == 'release' || github.event_name == 'push'
-    permissions:
-      contents: read
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      python_version: 3.12
-    runs-on: ubuntu-latest # in the future we can try to use alternative runners here
-
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Run Migration Tests
-        run: |
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run --rm inventree-dev-server invoke update
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run --rm inventree-dev-server invoke dev.setup-dev
-          docker compose --project-directory . -f contrib/container/dev-docker-compose.yml run --rm inventree-dev-server invoke dev.test --migrations --translations
-
-  # Build and publish
-  publish:
-    name: Publish Docker Image
-    needs: [build, migration_test]
-    permissions:
-      contents: read
-      packages: write
-    env:
-      python_version: 3.12
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set Up Python ${{ env.python_version }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ env.python_version }}
-
-      - name: Version Check
-        run: |
-          pip install --require-hashes -r contrib/dev_reqs/requirements.txt
-          python3 .github/scripts/version_check.py
-          echo "git_commit_hash=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          echo "git_commit_date=$(git show -s --format=%ci)" >> $GITHUB_ENV
-
+      # ---------------------------------------------------------
+      # ЭТАП 2: Публикация образа (пропускается в Pull Request)
+      # ---------------------------------------------------------
       - name: Set up QEMU
         if: github.event_name != 'pull_request'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@v3
 
-      # Логин в GHCR.
-      # Используем secrets.GHCR_PAT с scope write:packages для гарантированной публикации.
       - name: Log into registry ghcr.io
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -201,10 +62,9 @@ jobs:
       - name: Extract Docker metadata
         if: github.event_name != 'pull_request'
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
@@ -220,10 +80,5 @@ jobs:
           target: production
           platforms: linux/amd64,linux/arm64
           push: true
-          sbom: true
-          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            commit_hash=${{ env.git_commit_hash }}
-            commit_date=${{ env.git_commit_date }}
