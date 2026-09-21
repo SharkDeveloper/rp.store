@@ -2201,7 +2201,7 @@ msgstr "Узел"
 #: src/tables/settings/PendingTasksTable.tsx:37
 #: src/tables/stock/LocationTypesTable.tsx:74
 msgid "Name"
-msgstr "Название"
+msgstr "Наименование"
 
 #: src/components/forms/HostOptionsForm.tsx:75
 msgid "No one here..."
@@ -3449,7 +3449,7 @@ msgstr "Информация о плагине"
 #: src/tables/machine/MachineTypeTable.tsx:258
 #: src/tables/plugin/PluginListTable.tsx:117
 msgid "Description"
-msgstr "Описание"
+msgstr "Описание/Характеристика"
 
 #: src/components/plugins/PluginDrawer.tsx:93
 msgid "Author"
@@ -9383,7 +9383,7 @@ msgstr "Единица измерения"
 #: src/pages/part/PartDetailsPanel.tsx:141
 #: src/tables/settings/PendingTasksTable.tsx:51
 msgid "Keywords"
-msgstr "Ключевые слова"
+msgstr "Тип ВС"
 
 #: src/pages/part/PartDetailsPanel.tsx:168
 #: src/tables/bom/BomTable.tsx:486
