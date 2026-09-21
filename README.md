@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/images/logo/inventree.png" alt="InvenTree logo" width="200" height="auto" />
-  <h1>InvenTree</h1>
+  <h1>Convers Avia</h1>
   <p>Open Source Inventory Management System </p>
 
 <!-- Badges -->
