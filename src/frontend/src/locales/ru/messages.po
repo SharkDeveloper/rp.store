@@ -3932,7 +3932,7 @@ msgstr "Вы подписаны на получение уведомлений �
 #: src/tables/stock/TransferOrderAllocationTable.tsx:123
 #: src/tables/stock/TransferOrderLineItemTable.tsx:98
 msgid "IPN"
-msgstr "Внутренний артикул"
+msgstr "Чертежный номер"
 
 #: src/components/tables/ColumnRenderers.tsx:137
 #: src/pages/build/BuildOrderDetailsPanel.tsx:60
@@ -11949,11 +11949,11 @@ msgstr "Сообщение"
 
 #: src/tables/part/PartBuildAllocationsTable.tsx:65
 msgid "Assembly IPN"
-msgstr "Внутренний артикул сборки"
+msgstr "Чертежный номер сборки"
 
 #: src/tables/part/PartBuildAllocationsTable.tsx:74
 msgid "Part IPN"
-msgstr "Внутренний артикул детали"
+msgstr "Чертежный номер детали"
 
 #: src/tables/part/PartBuildAllocationsTable.tsx:92
 msgid "Required Stock"
@@ -12141,7 +12141,7 @@ msgstr "Фильтр по деталям, в которых задана еди�
 
 #: src/tables/part/PartTableFilters.tsx:67
 msgid "Has IPN"
-msgstr "Есть внутренний артикул"
+msgstr "Есть Чертежный номер"
 
 #: src/tables/part/PartTableFilters.tsx:68
 msgid "Filter by parts which have an internal part number"
