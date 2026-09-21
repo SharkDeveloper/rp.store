@@ -6045,7 +6045,7 @@ msgstr "Артикул"
 
 #: order/serializers.py:770 part/models.py:1169 part/serializers.py:382
 msgid "Internal Part Number"
-msgstr "Внутренний артикул детали"
+msgstr "Чертежный номер детали"
 
 #: order/serializers.py:778
 msgid "Internal Part Name"
@@ -6607,7 +6607,7 @@ msgstr "Категория"
 #: part/models.py:1168 part/serializers.py:812
 #: report/templates/report/inventree_stock_location_report.html:103
 msgid "IPN"
-msgstr "Внутренний артикул"
+msgstr "Чертежный номер"
 
 #: part/models.py:1176
 msgid "Part revision or version number"
@@ -7383,7 +7383,7 @@ msgstr "Выделено для заказов на продажу"
 
 #: part/serializers.py:1284
 msgid "Part IPN"
-msgstr "Внутренний артикул детали"
+msgstr "Чертежный номер детали"
 
 #: part/serializers.py:1291
 msgid "Part Description"
