@@ -24,6 +24,9 @@ import {
 import InstanceDetail from '../../components/nav/InstanceDetail';
 import { PageDetail } from '../../components/nav/PageDetail';
 import AttachmentPanel from '../../components/panels/AttachmentPanel';
+import HistoryPanel, {
+  useShowHistoryPanel
+} from '../../components/panels/HistoryPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
@@ -82,7 +85,8 @@ export default function PurchaseOrderDetail() {
   const purchaseOrderFields = usePurchaseOrderFields({});
 
   const duplicatePurchaseOrderFields = usePurchaseOrderFields({
-    duplicateOrderId: order.pk
+    duplicateOrderId: order.pk,
+    create: true
   });
 
   const editPurchaseOrder = useEditApiFormModal({
@@ -90,7 +94,6 @@ export default function PurchaseOrderDetail() {
     pk: id,
     title: t`Edit Purchase Order`,
     fields: purchaseOrderFields,
-    queryParams: new URLSearchParams({ tags: 'true' }),
     onFormSuccess: () => {
       refreshInstance();
     }
@@ -131,6 +134,8 @@ export default function PurchaseOrderDetail() {
     follow: true,
     modelType: ModelType.purchaseorder
   });
+
+  const showHistory = useShowHistoryPanel();
 
   const orderPanels: PanelType[] = useMemo(() => {
     return [
@@ -222,9 +227,14 @@ export default function PurchaseOrderDetail() {
           !globalSettings.isSet('PURCHASEORDER_EDIT_COMPLETED_ORDERS')
             ? false
             : undefined
+      }),
+      HistoryPanel({
+        model_type: ModelType.purchaseorder,
+        model_id: order.pk,
+        visible: showHistory
       })
     ];
-  }, [order, id, user, instanceInfo]);
+  }, [order, id, user, instanceInfo, showHistory]);
 
   const issueOrder = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.purchase_order_issue, order.pk),
@@ -373,6 +383,8 @@ export default function PurchaseOrderDetail() {
       >
         <Stack gap='xs'>
           <PageDetail
+            model={ModelType.purchaseorder}
+            id={order.pk}
             title={`${t`Purchase Order`}: ${order.reference}`}
             subtitle={subtitle}
             imageUrl={order.supplier_detail?.image}

@@ -31,6 +31,9 @@ import type { Breadcrumb } from '../../components/nav/BreadcrumbList';
 import InstanceDetail from '../../components/nav/InstanceDetail';
 import { PageDetail } from '../../components/nav/PageDetail';
 import AttachmentPanel from '../../components/panels/AttachmentPanel';
+import HistoryPanel, {
+  useShowHistoryPanel
+} from '../../components/panels/HistoryPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
@@ -96,6 +99,8 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
     />
   );
 
+  const showHistory = useShowHistoryPanel();
+
   const companyPanels: PanelType[] = useMemo(() => {
     return [
       {
@@ -108,14 +113,18 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
         name: 'supplied-parts',
         label: t`Supplied Parts`,
         icon: <IconPackageExport />,
-        hidden: !company?.is_supplier,
+        hidden:
+          !company?.is_supplier ||
+          !user?.hasViewVisible(UserRoles.purchase_order),
         content: company?.pk && <SupplierPartTable supplierId={company.pk} />
       },
       {
         name: 'manufactured-parts',
         label: t`Manufactured Parts`,
         icon: <IconBuildingWarehouse />,
-        hidden: !company?.is_manufacturer,
+        hidden:
+          !company?.is_manufacturer ||
+          !user?.hasViewVisible(UserRoles.purchase_order),
         content: company?.pk && (
           <ManufacturerPartTable manufacturerId={company.pk} />
         )
@@ -124,7 +133,9 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
         name: 'purchase-orders',
         label: t`Purchase Orders`,
         icon: <IconShoppingCart />,
-        hidden: !company?.is_supplier,
+        hidden:
+          !company?.is_supplier ||
+          !user?.hasViewVisible(UserRoles.purchase_order),
         content: company?.pk && <PurchaseOrderTable supplierId={company.pk} />
       },
       {
@@ -144,14 +155,17 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
         name: 'sales-orders',
         label: t`Sales Orders`,
         icon: <IconTruckDelivery />,
-        hidden: !company?.is_customer,
+        hidden:
+          !company?.is_customer || !user?.hasViewVisible(UserRoles.sales_order),
         content: company?.pk && <SalesOrderTable customerId={company.pk} />
       },
       {
         name: 'return-orders',
         label: t`Return Orders`,
         icon: <IconTruckReturn />,
-        hidden: !company?.is_customer,
+        hidden:
+          !company?.is_customer ||
+          !user?.hasViewVisible(UserRoles.return_order),
         content: company.pk ? (
           <ReturnOrderTable customerId={company.pk} />
         ) : (
@@ -202,16 +216,20 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
         model_type: ModelType.company,
         model_id: company.pk,
         note_count: instanceInfo.note_count
+      }),
+      HistoryPanel({
+        model_type: ModelType.company,
+        model_id: company.pk,
+        visible: showHistory
       })
     ];
-  }, [id, company, user, instanceInfo]);
+  }, [id, company, user, instanceInfo, showHistory]);
 
   const editCompany = useEditApiFormModal({
     url: ApiEndpoints.company_list,
     pk: company?.pk,
     title: t`Edit Company`,
     fields: useMemo(() => companyFields({}), []),
-    queryParams: new URLSearchParams({ tags: 'true' }),
     onFormSuccess: refreshInstance
   });
 
@@ -268,6 +286,7 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
     return [
       <DetailsBadge
         label={t`Inactive`}
+        tooltip={t`This company is inactive`}
         color='red'
         visible={company.active == false}
       />
@@ -285,6 +304,8 @@ export default function CompanyDetail(props: Readonly<CompanyDetailProps>) {
       >
         <Stack gap='xs'>
           <PageDetail
+            model={ModelType.company}
+            id={company.pk}
             title={`${t`Company`}: ${company.name}`}
             subtitle={company.description}
             actions={companyActions}

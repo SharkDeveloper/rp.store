@@ -1,8 +1,11 @@
 """Base plugin which defines the built-in well-known entries."""
 
 from django.http import HttpRequest, JsonResponse
+from django.shortcuts import redirect
 from django.urls import path, reverse_lazy
 from django.utils.translation import gettext_lazy as _
+
+from flags.state import flag_enabled
 
 import InvenTree.helpers
 from InvenTree.permissions import auth_exempt
@@ -29,7 +32,28 @@ class InvenTreeWellKnown(WellKnownMixin, UrlsMixin, InvenTreePlugin):
         # See https://www.w3.org/TR/passkey-endpoints/
         data.append(('passkey-endpoints', reverse_lazy(f'plugin:{self.slug}:passkey')))
 
-        # placeholder for more
+        # Check if OIDC is enabled, and if so, add the relevant entries
+        try:
+            if flag_enabled('OIDC', request=request):
+                data.append((
+                    'openid-configuration',
+                    str(reverse_lazy('oauth2_provider:oidc-connect-discovery-info')),
+                ))
+        except Exception:  # pragma: no cover
+            # If the flag is not evaluated successfully, we can ignore it
+            pass
+
+        # change password to help pwd managers - see https://adamj.eu/tech/2026/09/16/django-change-password-url/
+        data.append((
+            'change-password',
+            reverse_lazy(f'plugin:{self.slug}:change-password'),
+        ))
+        # dead url (for change-password)
+        data.append((
+            'resource-that-should-not-exist-whose-status-code-should-not-be-200',
+            reverse_lazy(f'plugin:{self.slug}:dead'),
+        ))
+
         return data
 
     @auth_exempt
@@ -40,6 +64,22 @@ class InvenTreeWellKnown(WellKnownMixin, UrlsMixin, InvenTreePlugin):
         )
         return JsonResponse({'enroll': passkey_web, 'manage': passkey_web})
 
+    @auth_exempt
+    def view_change_password(self, request, *args, **kwargs):
+        """Redirect to the change-password web page."""
+        return redirect(
+            request.build_absolute_uri(InvenTree.helpers.pui_url('/change-password'))
+        )
+
+    @auth_exempt
+    def view_dead(self, request, *args, **kwargs):
+        """Return a 404 for the dead well-known entry."""
+        return JsonResponse({'error': 'Not found'}, status=404)
+
     def setup_urls(self):
         """Urls that are exposed by this plugin."""
-        return [path('passkey/', self.view_passkey, name='passkey')]
+        return [
+            path('passkey/', self.view_passkey, name='passkey'),
+            path('change-password', self.view_change_password, name='change-password'),
+            path('dead', self.view_dead, name='dead'),
+        ]

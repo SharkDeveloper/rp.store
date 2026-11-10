@@ -30,6 +30,9 @@ import {
 import InstanceDetail from '../../components/nav/InstanceDetail';
 import { PageDetail } from '../../components/nav/PageDetail';
 import AttachmentPanel from '../../components/panels/AttachmentPanel';
+import HistoryPanel, {
+  useShowHistoryPanel
+} from '../../components/panels/HistoryPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
@@ -107,7 +110,6 @@ export default function SalesOrderDetail() {
     pk: order.pk,
     title: t`Edit Sales Order`,
     fields: salesOrderFields,
-    queryParams: new URLSearchParams({ tags: 'true' }),
     onFormSuccess: () => {
       refreshInstance();
     }
@@ -134,6 +136,8 @@ export default function SalesOrderDetail() {
     follow: true,
     modelType: ModelType.salesorder
   });
+
+  const showHistory = useShowHistoryPanel();
 
   const orderPanels: PanelType[] = useMemo(() => {
     return [
@@ -220,7 +224,7 @@ export default function SalesOrderDetail() {
         name: 'build-orders',
         label: t`Build Orders`,
         icon: <IconTools />,
-        hidden: !user.hasViewRole(UserRoles.build),
+        hidden: !user.hasViewVisible(UserRoles.build),
         content: order?.pk ? (
           <BuildOrderTable salesOrderId={order.pk} />
         ) : (
@@ -247,9 +251,14 @@ export default function SalesOrderDetail() {
           !globalSettings.isSet('SALESORDER_EDIT_COMPLETED_ORDERS')
             ? false
             : undefined
+      }),
+      HistoryPanel({
+        model_type: ModelType.salesorder,
+        model_id: order.pk,
+        visible: showHistory
       })
     ];
-  }, [order, id, user, soStatus, instanceInfo]);
+  }, [order, id, user, soStatus, instanceInfo, showHistory]);
 
   const issueOrder = useCreateApiFormModal({
     url: apiUrl(ApiEndpoints.sales_order_issue, order.pk),
@@ -424,6 +433,8 @@ export default function SalesOrderDetail() {
       >
         <Stack gap='xs'>
           <PageDetail
+            model={ModelType.salesorder}
+            id={order.pk}
             title={`${t`Sales Order`}: ${order.reference}`}
             subtitle={subtitle}
             imageUrl={order.customer_detail?.image}

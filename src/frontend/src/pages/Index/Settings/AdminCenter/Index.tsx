@@ -4,12 +4,14 @@ import type { PanelGroupType, PanelType } from '@lib/types/Panel';
 import { t } from '@lingui/core/macro';
 import { Stack } from '@mantine/core';
 import {
+  IconBuilding,
   IconCoins,
   IconCpu,
   IconDevicesPc,
   IconExclamationCircle,
   IconFileCode,
   IconFileDownload,
+  IconFileSearch,
   IconFileUpload,
   IconHome,
   IconList,
@@ -35,6 +37,7 @@ import { PanelGroup } from '../../../../components/panels/PanelGroup';
 import { GlobalSettingList } from '../../../../components/settings/SettingList';
 import { Loadable } from '../../../../functions/loading';
 import { useUserState } from '../../../../states/UserState';
+import { CompanyTable } from '../../../../tables/company/CompanyTable';
 import ParameterTemplateTable from '../../../../tables/general/ParameterTemplateTable';
 import SelectionListTable from '../../../../tables/settings/SelectionListTable';
 
@@ -76,8 +79,12 @@ const MachineManagementPanel = Loadable(
 
 const NoteTemplatePanel = Loadable(lazy(() => import('./NoteTemplatePanel')));
 
-const ScimManagementPanel = Loadable(
-  lazy(() => import('./ScimManagementPanel'))
+const IdentityManagementPanel = Loadable(
+  lazy(() => import('./IdentityManagementPanel'))
+);
+
+const AuditLogManagementPanel = Loadable(
+  lazy(() => import('./AuditLogManagementPanel'))
 );
 
 const ErrorReportTable = Loadable(
@@ -175,6 +182,23 @@ export default function AdminCenter() {
         label: t`Error Reports`,
         icon: <IconExclamationCircle />,
         content: <ErrorReportTable />
+      },
+      {
+        name: 'audit-log',
+        label: t`Audit Log`,
+        icon: <IconFileSearch />,
+        content: <AuditLogManagementPanel />
+      },
+      {
+        name: 'companies',
+        label: t`Companies`,
+        icon: <IconBuilding />,
+        content: (
+          <Stack gap='xs'>
+            <GlobalSettingList keys={['INVENTREE_DEFAULT_INTERNAL_COMPANY']} />
+            <CompanyTable companyType='all' />
+          </Stack>
+        )
       },
       {
         name: 'currencies',
@@ -280,9 +304,9 @@ export default function AdminCenter() {
       },
       {
         name: 'identity',
-        label: t`Identity`,
+        label: t`Identity Federation`,
         icon: <IconShieldLock />,
-        content: <ScimManagementPanel />,
+        content: <IdentityManagementPanel />,
         hidden: !user.hasViewRole(UserRoles.admin)
       }
     ];
@@ -299,6 +323,8 @@ export default function AdminCenter() {
           'barcode-history',
           'background',
           'errors',
+          'audit-log',
+          'companies',
           'currencies',
           'email'
         ]

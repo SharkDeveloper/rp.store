@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import { createApi } from '../api.ts';
-import { test } from '../baseFixtures.ts';
+import { generateUUID, test } from '../baseFixtures.ts';
 import { readeruser, stevenuser } from '../defaults.ts';
 import {
   activateCalendarView,
@@ -15,7 +15,9 @@ import {
   setTableChoiceFilter,
   showCalendarView,
   showParametricView,
-  showTableView
+  showTableView,
+  tableSearch,
+  waitForDataOutput
 } from '../helpers.ts';
 import { doCachedLogin } from '../login.ts';
 
@@ -52,9 +54,7 @@ test('Purchasing - Index', async ({ browser }) => {
 
   // Check for expected values
   await clearTableFilters(page);
-  await page
-    .getByRole('textbox', { name: 'table-search-input' })
-    .fill('R_100K_0402');
+  await tableSearch(page, 'R_100K_0402');
   await page.getByText('R_100K_0402_1%').first().waitFor();
   await page.getByRole('cell', { name: 'RR05P100KDTR-ND' }).first().waitFor();
 
@@ -154,9 +154,7 @@ test('Purchasing - Manufacturer Parts', async ({ browser }) => {
     url: 'purchasing/index/manufacturer-parts'
   });
 
-  await page
-    .getByRole('textbox', { name: 'table-search-input' })
-    .fill('CPF0402B100KE1');
+  await tableSearch(page, 'CPF0402B100KE1');
   await page.getByText('R_100K_0402_1%').first().waitFor();
   await page.getByRole('cell', { name: 'CPF0402B100KE1' }).waitFor();
 
@@ -166,8 +164,9 @@ test('Purchasing - Manufacturer Parts', async ({ browser }) => {
   await page
     .getByRole('combobox', { name: 'choice-field-export_plugin' })
     .fill('CSV');
-  await page.getByRole('button', { name: 'Export', exact: true }).click();
-  await page.getByText('Process completed successfully').waitFor();
+  await waitForDataOutput(page, () =>
+    page.getByRole('button', { name: 'Export', exact: true }).click()
+  );
 
   await loadTab(page, 'Manufacturers');
   await page.getByText('Murata Electronics').waitFor();
@@ -259,6 +258,11 @@ test('Purchase Orders - Table', async ({ browser }) => {
   // Expected values
   await page.getByText('2025-06-12').waitFor(); // Start Date
   await page.getByText('2025-07-17').waitFor(); // Target Date
+
+  // Creator of the order should be displayed
+  await expect(page.getByRole('row', { name: 'Created By' })).toContainText(
+    'steven'
+  );
 });
 
 test('Purchase Orders - Calendar', async ({ browser }) => {
@@ -584,7 +588,7 @@ test('Purchase Orders - Receive Items', async ({ browser }) => {
   await page.getByLabel('action-button-add-note').click();
 
   await page
-    .getByLabel('text-field-batch_code', { exact: true })
+    .getByLabel('text-field-line_batch_code', { exact: true })
     .fill('my-batch-code');
   await page.getByLabel('text-field-packaging', { exact: true }).fill('bucket');
   await page
@@ -602,13 +606,13 @@ test('Purchase Orders - Receive Items', async ({ browser }) => {
   await loadTab(page, 'Received Stock');
   await clearTableFilters(page);
 
-  await page
-    .getByRole('textbox', { name: 'table-search-input' })
-    .fill('my-batch-code');
+  await tableSearch(page, 'my-batch-code');
   await page.getByRole('cell', { name: 'my-batch-code' }).first().waitFor();
 });
 
 test('Purchase Orders - Custom Location', async ({ browser }) => {
+  // Unique batch code, so that retries do not match items from earlier attempts
+  const batchCode = `po-custom-location-${generateUUID().slice(0, 8)}`;
   const page = await doCachedLogin(browser);
 
   await navigate(page, 'purchasing/purchase-order/14/line-items');
@@ -640,19 +644,34 @@ test('Purchase Orders - Custom Location', async ({ browser }) => {
   await row.getByLabel(/row-action-menu-/i).click();
   await page.getByRole('menuitem', { name: 'Receive line item' }).click();
 
-  await page.getByLabel('tree-field-location').fill('storage room a');
-  await page.getByText('Storage Room A (purple door)').click();
+  // Wait for the form to apply its initial data (the order's destination),
+  // otherwise it can overwrite the location selected below
+  const locationField = page.getByLabel('tree-field-location');
+  await expect(locationField).toHaveValue(/Mechanical Lab/);
+
+  await expect(async () => {
+    await locationField.fill('storage room a');
+    await page
+      .getByText('Storage Room A (purple door)')
+      .click({ timeout: 5000 });
+    await expect(locationField).toHaveValue(/Storage Room A/, {
+      timeout: 2000
+    });
+  }).toPass({ timeout: 30000 });
 
   await page.getByLabel('number-field-quantity').fill('1');
   await page.waitForTimeout(500);
 
   await page.getByLabel('action-button-assign-batch-').click();
   await page
-    .getByLabel('text-field-batch_code', { exact: true })
-    .fill('po-custom-location-test');
+    .getByLabel('text-field-line_batch_code', { exact: true })
+    .fill(batchCode);
 
   // Short timeout to allow for debouncing
   await page.waitForTimeout(200);
+
+  // Ensure the selected location has not been reset
+  await expect(locationField).toHaveValue(/Storage Room A/);
 
   await page.getByRole('button', { name: 'Submit' }).click();
   await page.getByText('Items received').waitFor();
@@ -662,13 +681,11 @@ test('Purchase Orders - Custom Location', async ({ browser }) => {
   await loadTab(page, 'Received Stock');
   await clearTableFilters(page);
 
-  await page
-    .getByRole('textbox', { name: 'table-search-input' })
-    .fill('po-custom-location-test');
+  await tableSearch(page, batchCode);
 
   const receivedRow = page
     .getByRole('row')
-    .filter({ hasText: 'po-custom-location-test' })
+    .filter({ hasText: batchCode })
     .first();
 
   await expect(receivedRow).toContainText('Storage Room A');
@@ -687,7 +704,7 @@ test('Purchase Orders - Custom Location', async ({ browser }) => {
   expect(targetLocation).toBeTruthy();
 
   const items = await api
-    .get('stock/', { params: { batch: 'po-custom-location-test' } })
+    .get('stock/', { params: { batch: batchCode } })
     .then((res) => res.json());
   expect(items.length).toBeGreaterThan(0);
 

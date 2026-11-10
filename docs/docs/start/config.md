@@ -102,6 +102,8 @@ The following debugging / logging options are available:
 {{ configsetting("INVENTREE_DEBUG_QUERYCOUNT") }} Enable support for [django-querycount](../develop/index.md#django-querycount) middleware. |
 {{ configsetting("INVENTREE_DEBUG_SILK") }} Enable support for [django-silk](../develop/index.md#django-silk) profiling tool. |
 | `INVENTREE_DEBUG_SILK_PROFILING` | `debug_silk_profiling` | False | Enable detailed profiling in django-silk |
+| `INVENTREE_GUNICORN_ACCESS_LOG` | - | True | Enable gunicorn access logging |
+| `INVENTREE_GUNICORN_ERROR_LOG` | - | True | Enable gunicorn error logging |
 
 ### Debug Mode
 
@@ -270,6 +272,8 @@ The following database options can be configured:
 
 ### PostgreSQL Settings
 
+InvenTree requires a minimum PostgreSQL version of {{ config.extra.min_postgres_version }}.
+
 If running with a PostgreSQL database backend, the following additional options are available:
 
 {{ configtable() }}
@@ -280,8 +284,14 @@ If running with a PostgreSQL database backend, the following additional options 
 | `INVENTREE_DB_TCP_KEEPALIVES_COUNT` | database.tcp_keepalives_count | 5 | TCP keepalive count |
 | `INVENTREE_DB_TCP_USER_TIMEOUT` | database.tcp_user_timeout | 2000 | TCP user timeout (ms) |
 | `INVENTREE_DB_ISOLATION_SERIALIZABLE` | database.serializable | False | Database isolation level configured to "serializable" |
+| `INVENTREE_DB_JIT_ENABLED` | database.jit_enabled | False | Enable JIT compilation for PostgreSQL queries |
+
+!!! info "JIT Compilation"
+    PostgreSQL supports [JIT compilation](https://www.postgresql.org/docs/current/jit.html) for queries. This is disabled by default, as it can cause performance issues for small queries.
 
 ### MySQL Settings
+
+InvenTree requires a minimum MySQL version of {{ config.extra.min_mysql_version }}.
 
 If running with a MySQL database backend, the following additional options are available:
 
@@ -290,6 +300,8 @@ If running with a MySQL database backend, the following additional options are a
 | `INVENTREE_DB_ISOLATION_SERIALIZABLE` | database.serializable | False | Database isolation level configured to "serializable" |
 
 ### SQLite Settings
+
+InvenTree requires a minimum SQLite version of {{ config.extra.min_sqlite_version }}.
 
 !!! warning "SQLite Performance"
     SQLite is not recommended for production use, and should only be used for testing or development purposes. If you are using SQLite in production, you may want to adjust the following settings to improve performance.
@@ -317,7 +329,7 @@ Enabling global caching requires connection to a redis server (which is separate
 The following cache settings are available:
 
 {{ configtable() }}
-{{ configsetting("INVENTREE_CACHE_ENABLED") }} Enable redis caching |
+{{ configsetting("INVENTREE_CACHE_ENABLED", default="True if `INVENTREE_CACHE_HOST` is set") }} Enable redis caching |
 {{ configsetting("INVENTREE_CACHE_HOST") }} Cache server host |
 {{ configsetting("INVENTREE_CACHE_PORT") }} Cache server port |
 {{ configsetting("INVENTREE_CACHE_PASSWORD") }} Cache server password |
@@ -331,6 +343,8 @@ The following cache settings are available:
 {{ configsetting("INVENTREE_CACHE_KEEPALIVE_INTERVAL") }} Cache keepalive interval |
 {{ configsetting("INVENTREE_CACHE_USER_TIMEOUT") }} Cache user timeout |
 
+!!! tip "Cache Host"
+    If a value is provided for `INVENTREE_CACHE_HOST`, global caching will be enabled, unless the `INVENTREE_CACHE_ENABLED` setting is explicitly set to `False`.
 
 !!! tip "Cache Password"
     The value specified for `INVENTREE_CACHE_PASSWORD` should not contain comma `,` or colon `:` characters, otherwise the connection to the cache server may fail.
@@ -439,6 +453,7 @@ InvenTree provides allowance for additional sign-in options. The following optio
 {{ configsetting("INVENTREE_MFA_ENABLED") }} Enable multi-factor authentication support for the InvenTree server |
 {{ configsetting("INVENTREE_MFA_SUPPORTED_TYPES") }} List of supported multi-factor authentication types |
 {{ configsetting("INVENTREE_USE_JWT") }} Enable support for JSON Web Tokens (JWT) for authentication |
+{{ configsetting("INVENTREE_BASIC_AUTH_ENABLED") }} Enable/Disable basic (username:password) authentication against the API. See [Basic Auth](../api/index.md#basic-auth) |
 
 ### Single Sign On
 

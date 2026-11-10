@@ -38,7 +38,7 @@ import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
 import SegmentedControlPanel from '../../components/panels/SegmentedControlPanel';
 import LocateItemButton from '../../components/plugins/LocateItemButton';
-import { stockLocationFields } from '../../forms/StockForms';
+import { useStockLocationFields } from '../../forms/StockForms';
 import { InvenTreeIcon } from '../../functions/icons';
 import {
   useDeleteApiFormModal,
@@ -170,9 +170,7 @@ export default function Stock() {
         name: 'transfer-orders',
         label: t`Transfer Orders`,
         icon: <IconTransfer />,
-        hidden:
-          !user.hasViewRole(UserRoles.transfer_order) ||
-          !globalSettings.isSet('TRANSFERORDER_ENABLED'),
+        hidden: !user.hasViewVisible(UserRoles.transfer_order),
         selection: transferOrderView,
         onChange: setTransferOrderView,
         options: [
@@ -224,7 +222,7 @@ export default function Stock() {
     url: ApiEndpoints.stock_location_list,
     pk: id,
     title: t`Edit Stock Location`,
-    fields: stockLocationFields(),
+    fields: useStockLocationFields(),
     onFormSuccess: refreshInstance
   });
 
@@ -440,38 +438,43 @@ export default function Stock() {
             opened={treeOpen}
             onClose={() => setTreeOpen(false)}
             selectedId={location?.pk}
-          />
-          <PageDetail
-            title={(location?.name ?? id) ? t`Stock Location` : t`Stock`}
-            subtitle={location?.description}
-            icon={location?.icon && <ApiIcon name={location?.icon} />}
-            actions={location?.pk ? locationActions : undefined}
-            editAction={editLocation.open}
-            editEnabled={
-              !!location?.pk &&
-              user.hasChangePermission(ModelType.stocklocation)
-            }
-            breadcrumbs={breadcrumbs}
-            lastCrumb={[
-              {
-                name: location.name,
-                url: `/stock/location/${location.pk}/`
-              }
-            ]}
-            breadcrumbAction={() => {
-              setTreeOpen(true);
-            }}
-          />
-          <PanelGroup
-            pageKey='stocklocation'
-            panels={locationPanels}
-            model={ModelType.stocklocation}
-            reloadInstance={refreshInstance}
-            id={location?.pk}
-            instance={location}
-            pluginPanelWithoutId
-            defaultPanel={defaultPanel}
-          />
+          >
+            <Stack>
+              <PageDetail
+                model={ModelType.stocklocation}
+                id={location?.pk}
+                title={(location?.name ?? id) ? t`Stock Location` : t`Stock`}
+                subtitle={location?.description}
+                icon={location?.icon && <ApiIcon name={location?.icon} />}
+                actions={location?.pk ? locationActions : undefined}
+                editAction={editLocation.open}
+                editEnabled={
+                  !!location?.pk &&
+                  user.hasChangePermission(ModelType.stocklocation)
+                }
+                breadcrumbs={breadcrumbs}
+                lastCrumb={[
+                  {
+                    name: location.name,
+                    url: `/stock/location/${location.pk}/`
+                  }
+                ]}
+                breadcrumbAction={() => {
+                  setTreeOpen(true);
+                }}
+              />
+              <PanelGroup
+                pageKey='stocklocation'
+                panels={locationPanels}
+                model={ModelType.stocklocation}
+                reloadInstance={refreshInstance}
+                id={location?.pk}
+                instance={location}
+                pluginPanelWithoutId
+                defaultPanel={defaultPanel}
+              />
+            </Stack>
+          </NavigationTree>
         </Stack>
         {stockAdjustActions.modals.map((modal) => modal.modal)}
       </InstanceDetail>

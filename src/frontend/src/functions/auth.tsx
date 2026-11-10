@@ -1,8 +1,3 @@
-import {
-  type CredentialRequestOptionsJSON,
-  get,
-  parseRequestOptionsFromJSON
-} from '@github/webauthn-json/browser-ponyfill';
 import { ApiEndpoints } from '@lib/enums/ApiEndpoints';
 import { apiUrl } from '@lib/functions/Api';
 import { getBaseUrl } from '@lib/functions/Navigation';
@@ -351,28 +346,37 @@ export async function ensureCsrf() {
   }
 }
 
-export function handleReset(
+export async function handleReset(
   navigate: NavigateFunction,
   values: { email: string }
 ) {
-  ensureCsrf();
-  api.post(apiUrl(ApiEndpoints.user_reset), values).then((val) => {
-    if (val.status === 200) {
-      notifications.show({
-        title: t`Mail delivery successful`,
-        message: t`Check your inbox for a reset link. This only works if you have an account. Check in spam too.`,
-        color: 'green',
-        autoClose: false
-      });
-      navigate('/login');
-    } else {
-      notifications.show({
-        title: t`Reset failed`,
-        message: t`Check your input and try again.`,
-        color: 'red'
-      });
-    }
-  });
+  // Ensure the CSRF cookie is set *before* making the POST request
+  await ensureCsrf();
+
+  const showResetFailed = () => {
+    notifications.show({
+      title: t`Reset failed`,
+      message: t`Check your input and try again.`,
+      color: 'red'
+    });
+  };
+
+  api
+    .post(apiUrl(ApiEndpoints.user_reset), values)
+    .then((val) => {
+      if (val.status === 200) {
+        notifications.show({
+          title: t`Mail delivery successful`,
+          message: t`Check your inbox for a reset link. This only works if you have an account. Check in spam too.`,
+          color: 'green',
+          autoClose: false
+        });
+        navigate('/login');
+      } else {
+        showResetFailed();
+      }
+    })
+    .catch(showResetFailed);
 }
 
 export async function handleMfaLogin(
@@ -798,11 +802,11 @@ export async function handleWebauthnLogin(
   }
 
   try {
-    const credential = await get(
-      parseRequestOptionsFromJSON(
-        webauthn_challenge as CredentialRequestOptionsJSON
-      )
+    // The server returns the options wrapped as { publicKey: {...}, mediation: ... }
+    const publicKey = PublicKeyCredential.parseRequestOptionsFromJSON(
+      webauthn_challenge.publicKey ?? webauthn_challenge
     );
+    const credential = await navigator.credentials.get({ publicKey });
     await api
       .post(apiUrl(ApiEndpoints.auth_webauthn_login), {
         credential: credential

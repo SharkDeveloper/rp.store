@@ -56,6 +56,14 @@ A purchase order is linked to a specific supplier, select one in the list of exi
 
 Fill out the rest of the form with the purchase order information then click on <span class="badge inventree confirm">Submit</span>
 
+### Receiving Company and Delivery Address
+
+The *receiving company* field specifies which [internal company](../concepts/company.md#internal-companies) is receiving the items in this order. Only companies marked as internal can be selected.
+
+When a new purchase order is created, the receiving company defaults to the [default internal company](../concepts/company.md#default-internal-company), if one is configured. If no default is configured, and exactly one internal company exists, that company is selected automatically.
+
+The *delivery address* field specifies where the items should be delivered. The selected address must belong to the receiving company.
+
 ### Purchase Order Reference
 
 Each Purchase Order is uniquely identified by its *Reference* field. Read more about [reference fields](../settings/reference.md).
@@ -109,7 +117,7 @@ There are two options to mark items as "received":
 
 When receiving items from a purchase order, the location of the items must be specified. There are multiple ways to specify the location:
 
-* **Order Destination**: The *destination* field of the purchase order can be set to a specific location. When receiving items, the location will default to the destination location.
+* **Order Destination**: The *destination* field of the purchase order can be set to a specific location. When receiving items, the location will default to the destination location. If the [Default Receive Location](#purchase-order-settings) setting is configured, the *destination* field will be pre-filled with this location when creating a new purchase order.
 
 * **Line Item Location**: Each line item can have a specific location set. When receiving items, the location will default to the line item location. *Note: A destination specified at the line item level will override the destination specified at the order level.*
 
@@ -206,9 +214,11 @@ The following [global settings](../settings/global.md) are available for purchas
 
 | Name | Description | Default | Units |
 | ---- | ----------- | ------- | ----- |
+{{ globalsetting("PURCHASEORDER_ENABLED") }}
 {{ globalsetting("PURCHASEORDER_REFERENCE_PATTERN") }}
 {{ globalsetting("PURCHASEORDER_REQUIRE_RESPONSIBLE") }}
 {{ globalsetting("PURCHASEORDER_CONVERT_CURRENCY") }}
 {{ globalsetting("PURCHASEORDER_EDIT_COMPLETED_ORDERS") }}
 {{ globalsetting("PURCHASEORDER_AUTO_COMPLETE") }}
 {{ globalsetting("PURCHASEORDER_MERGE_LINE_ITEMS") }}
+{{ globalsetting("PURCHASEORDER_DEFAULT_RECEIVE_LOCATION") }}

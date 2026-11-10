@@ -4,7 +4,6 @@ from decimal import Decimal
 from typing import cast
 
 from django.conf import settings
-from django.contrib.auth import authenticate, login
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import F, Q
@@ -20,7 +19,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema, extend_schema_field
 from rest_framework import status
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import APIException, NotFound
 from rest_framework.response import Response
 
 import build.models
@@ -32,10 +31,11 @@ import company.models
 import stock.models as stock_models
 import stock.serializers as stock_serializers
 from data_exporter.mixins import DataExportViewMixin
-from generic.states.api import StatusView
+from generic.states.api import FSMTransitionMixin, StatusView
 from InvenTree.api import (
     BulkDeleteMixin,
     BulkDeleteViewsetMixin,
+    BulkRequestSerializer,
     BulkUpdateMixin,
     ListCreateDestroyAPIView,
     ParameterListMixin,
@@ -70,6 +70,7 @@ from order.status_codes import (
     TransferOrderStatusGroups,
 )
 from part.models import Part
+from users.authentication import InvenTreeBasicAuthentication
 from users.models import Owner
 from users.permissions import check_user_permission
 
@@ -388,6 +389,7 @@ class PurchaseOrderViewSet(
     DataExportViewMixin,
     OutputOptionsMixin,
     ParameterListMixin,
+    FSMTransitionMixin,
     RetrieveUpdateDestroyModelViewSet,
 ):
     """API endpoint for accessing PurchaseOrder objects.
@@ -405,6 +407,17 @@ class PurchaseOrderViewSet(
         'supplier', 'created_by'
     )
     serializer_class = serializers.PurchaseOrderSerializer
+    # TODO @matmair remove legacy return codes
+    transition_options = {
+        'cancel_order': {'name': 'cancel', 'return_code': 201},
+        'complete_order': {
+            'name': 'complete',
+            'return_code': 201,
+            'serializer_class': serializers.PurchaseOrderCompleteSerializer,
+        },
+        'hold_order': {'name': 'hold', 'return_code': 201},
+        'place_order': {'name': 'issue', 'return_code': 201},
+    }
 
     ordering_field_aliases = {
         'reference': ['reference_int', 'reference'],
@@ -444,16 +457,7 @@ class PurchaseOrderViewSet(
         return queryset
 
     def get_order(self):
-        """Return the PurchaseOrder object associated with this API endpoint.
-
-        Note: deliberately a raw lookup rather than self.get_object() - the latter
-        routes through ParameterListMixin.filter_queryset(), which assumes
-        self.serializer_class.Meta.model exists. That's true for the default
-        PurchaseOrderSerializer, but not for the plain-Serializer action classes
-        (PurchaseOrderHoldSerializer etc.) used by hold/cancel/complete/issue/receive
-        below, so calling get_object() from those actions raises an unrelated
-        AttributeError instead of the intended 404.
-        """
+        """Return the PurchaseOrder object associated with this API endpoint."""
         try:
             return models.PurchaseOrder.objects.get(pk=self.kwargs.get('pk', None))
         except (ValueError, models.PurchaseOrder.DoesNotExist):
@@ -476,81 +480,6 @@ class PurchaseOrderViewSet(
 
         return context
 
-    # TODO @matmair remove legacy return codes
-    @extend_schema(responses={201: serializers.PurchaseOrderHoldSerializer})
-    @action(
-        detail=True,
-        methods=['post'],
-        serializer_class=serializers.PurchaseOrderHoldSerializer,
-        output_options=None,
-    )
-    def hold(self, request, pk=None):
-        """API endpoint to place a PurchaseOrder on hold."""
-        # Ensure the target order actually exists (raises NotFound -> 404 otherwise) -
-        # without this, a non-existent pk would fall through to the serializer's
-        # save(), which unconditionally reads self.context['order'], raising an
-        # unhandled KeyError (HTTP 500) instead of a clean 404.
-        self.get_order()
-
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    # TODO @matmair remove legacy return codes
-    @extend_schema(responses={201: serializers.PurchaseOrderCancelSerializer})
-    @action(
-        detail=True,
-        methods=['post'],
-        serializer_class=serializers.PurchaseOrderCancelSerializer,
-        output_options=None,
-    )
-    def cancel(self, request, pk=None):
-        """API endpoint to 'cancel' a purchase order.
-
-        The purchase order must be in a state which can be cancelled
-        """
-        self.get_order()
-
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    # TODO @matmair remove legacy return codes
-    @extend_schema(responses={201: serializers.PurchaseOrderCompleteSerializer})
-    @action(
-        detail=True,
-        methods=['post'],
-        serializer_class=serializers.PurchaseOrderCompleteSerializer,
-        output_options=None,
-    )
-    def complete(self, request, pk=None):
-        """API endpoint to 'complete' a purchase order."""
-        self.get_order()
-
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    # TODO @matmair remove legacy return codes
-    @extend_schema(responses={201: serializers.PurchaseOrderIssueSerializer})
-    @action(
-        detail=True,
-        methods=['post'],
-        serializer_class=serializers.PurchaseOrderIssueSerializer,
-        output_options=None,
-    )
-    def issue(self, request, pk=None):
-        """API endpoint to 'issue' (place) a PurchaseOrder."""
-        self.get_order()
-
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
     @extend_schema(responses={201: stock_serializers.StockItemSerializer(many=True)})
     @action(
         detail=True,
@@ -569,7 +498,9 @@ class PurchaseOrderViewSet(
         items = serializer.save()
         queryset = stock_serializers.StockItemSerializer.annotate_queryset(items)
 
-        response = stock_serializers.StockItemSerializer(queryset, many=True)
+        response = stock_serializers.StockItemSerializer(
+            queryset, many=True, permission_user=request.user
+        )
         return Response(response.data, status=status.HTTP_201_CREATED)
 
 
@@ -752,11 +683,62 @@ class PurchaseOrderLineItemViewSet(
         ):
             line_item.update_pricing()
 
-        serializer = serializers.PurchaseOrderLineItemSerializer(line_item)
+        serializer = serializers.PurchaseOrderLineItemSerializer(
+            line_item, permission_user=request.user
+        )
         headers = self.get_success_headers(serializer.data)
         return Response(
             serializer.data, status=status.HTTP_201_CREATED, headers=headers
         )
+
+    def check_received(self, queryset) -> None:
+        """Prevent deletion of line items against which stock has been received.
+
+        Deleting a received line item would erase the record of what was received
+        against the order. The line item rows are locked (in pk order, matching the
+        lock order used when receiving stock) so that a concurrent receipt cannot
+        succeed between this check and the deletion.
+
+        Raises:
+            ValidationError: If any line item has a received quantity
+        """
+        received = [
+            pk
+            for pk, qty in queryset
+            .select_for_update()
+            .order_by('pk')
+            .values_list('pk', 'received')
+            if qty > 0
+        ]
+
+        if received:
+            raise rest_framework.serializers.ValidationError(
+                _('Cannot delete line items which have received stock')
+            )
+
+    def perform_destroy(self, instance):
+        """Prevent deletion of a single line item which has received stock."""
+        with transaction.atomic():
+            self.check_received(
+                models.PurchaseOrderLineItem.objects.filter(pk=instance.pk)
+            )
+            instance.delete()
+
+    def validate_delete(self, queryset, request) -> None:
+        """Prevent bulk deletion of line items which have received stock."""
+        self.check_received(queryset)
+
+    @extend_schema(request=BulkRequestSerializer)
+    def bulk_delete(self, request, *args, **kwargs):
+        """Perform a bulk delete operation.
+
+        Provide either a list of ids (via `items`) or a filter (via `filters`) to select the items to be deleted.
+
+        This action is performed attomically, so either all items will be deleted, or none will be deleted.
+
+        """
+        with transaction.atomic():
+            return super().bulk_delete(request, *args, **kwargs)
 
     filter_backends = SEARCH_ORDER_FILTER
 
@@ -2495,9 +2477,7 @@ class OrderCalendarExport(ICalFeed):
         whether or not to show completed orders. Defaults to false
     """
 
-    instance_url = get_base_url()
-
-    instance_url = instance_url.replace('http://', '').replace('https://', '')
+    instance_url = get_base_url().replace('http://', '').replace('https://', '')
     timezone = settings.TIME_ZONE
     file_name = 'calendar.ics'
 
@@ -2539,26 +2519,19 @@ class OrderCalendarExport(ICalFeed):
         https://stackoverflow.com/questions/152248/can-i-use-http-basic-authentication-with-django
         https://www.djangosnippets.org/snippets/243/
         """
-        import base64
-
         if request.user.is_authenticated:
             # Authenticated on first try - maybe normal browser call?
             if forbidden := self.check_permission(request, **kwargs):
                 return forbidden
             return super().__call__(request, *args, **kwargs)
 
-        # No login yet - check in headers
-        if 'authorization' in request.headers:
-            auth = request.headers['authorization'].split()
-            if len(auth) == 2:
-                # NOTE: We are only support basic authentication for now.
-                #
-                if auth[0].lower() == 'basic':
-                    uname, passwd = base64.b64decode(auth[1]).decode('ascii').split(':')
-                    user = authenticate(username=uname, password=passwd)
-                    if user is not None and user.is_active:
-                        login(request, user)
-                        request.user = user
+        # No login yet - check for basic auth in headers
+        try:
+            if auth := InvenTreeBasicAuthentication().authenticate(request):
+                request.user = auth[0]
+        except APIException:
+            # Malformed or refused credentials - fall through to the 401 response
+            pass
 
         # Check again
         if request.user.is_authenticated:
@@ -2572,7 +2545,8 @@ class OrderCalendarExport(ICalFeed):
         response = JsonResponse({
             'detail': 'Authentication credentials were not provided.'
         })
-        response['WWW-Authenticate'] = 'Basic realm="api"'
+        if settings.BASIC_AUTH_ENABLED:
+            response['WWW-Authenticate'] = 'Basic realm="api"'
         response.status_code = 401
         return response
 
@@ -2695,8 +2669,6 @@ class OrderCalendarExport(ICalFeed):
 
 
 order_api_urls = [
-    # Purchase Order, Line Item, and Extra Line API endpoints via ViewSet router
-    path('', include(order_router.urls)),
     # Purchase order status code information (requires custom kwargs)
     path(
         'po/status/',
@@ -2704,6 +2676,8 @@ order_api_urls = [
         {StatusView.MODEL_REF: PurchaseOrderStatus},
         name='api-po-status-codes',
     ),
+    # Purchase Order, Line Item, and Extra Line API endpoints via ViewSet router
+    path('', include(order_router.urls)),
     # API endpoints for sales orders
     path(
         'so/',

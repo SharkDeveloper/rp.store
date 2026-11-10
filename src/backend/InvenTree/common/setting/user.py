@@ -205,6 +205,12 @@ USER_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': False,
         'validator': bool,
     },
+    'ROTATE_TABLE_HEADERS': {
+        'name': _('Rotated Table Headers'),
+        'description': _('Display table column headers with rotated (vertical) text'),
+        'default': False,
+        'validator': bool,
+    },
     'SHOW_SPOTLIGHT': {
         'name': _('Show Spotlight'),
         'description': _('Enable spotlight navigation functionality'),
@@ -243,9 +249,23 @@ USER_SETTINGS: dict[str, InvenTreeSettingsKeyType] = {
         'default': True,
         'validator': bool,
     },
+    'DISPLAY_HISTORY_TAB': {
+        'name': _('Show Change History'),
+        'description': _(
+            'Display the change history (audit log) panel on detail pages'
+        ),
+        'default': False,
+        'validator': bool,
+    },
     'ENABLE_LAST_BREADCRUMB': {
         'name': _('Show Last Breadcrumb'),
         'description': _('Show the current page in breadcrumbs'),
+        'default': False,
+        'validator': bool,
+    },
+    'NAVIGATION_TREE_PINNED': {
+        'name': _('Pin Navigation Tree'),
+        'description': _('Display navigation tree permanently'),
         'default': False,
         'validator': bool,
     },

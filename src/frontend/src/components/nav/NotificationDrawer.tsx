@@ -62,6 +62,28 @@ function NotificationEntry({
     }
   }
 
+  const base = `/${getBaseUrl()}`;
+
+  // The backend may provide an absolute URL (e.g. https://host/web/part/1/)
+  // If it points to a page within this frontend, reduce it to a path,
+  // so that it can be routed internally rather than reloading the page
+  if (link && !link.startsWith('/')) {
+    try {
+      const url = new URL(link);
+      if (
+        url.origin === window.location.origin &&
+        url.pathname.startsWith(`${base}/`)
+      ) {
+        link = `${url.pathname}${url.search}${url.hash}`;
+      }
+    } catch {
+      // Not a valid URL - leave as-is
+    }
+  }
+
+  const href =
+    link?.startsWith('/') && !link.startsWith(base) ? `${base}${link}` : link;
+
   return (
     <Paper p='xs' shadow='xs'>
       <Group justify='space-between' wrap='nowrap'>
@@ -72,7 +94,7 @@ function NotificationEntry({
         >
           <Stack gap={2}>
             <Anchor
-              href={link ? `/${getBaseUrl()}${link}` : '#'}
+              href={href || '#'}
               underline='hover'
               target='_blank'
               onClick={(event: any) => {
@@ -81,7 +103,7 @@ function NotificationEntry({
                   onRead();
                 }
 
-                if (link.startsWith('/')) {
+                if (link?.startsWith('/')) {
                   navigateToLink(link, navigate, event);
                 }
               }}

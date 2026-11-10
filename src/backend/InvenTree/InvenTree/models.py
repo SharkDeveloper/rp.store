@@ -20,6 +20,7 @@ from django.utils.translation import gettext_lazy as _
 
 import structlog
 from django_q.models import Task
+from django_q.signals import post_execute
 from error_report.models import Error
 from mptt.exceptions import InvalidMove
 from mptt.models import MPTTModel, TreeForeignKey
@@ -331,7 +332,7 @@ class ReferenceIndexingMixin(models.Model):
             # No existing items
             return 1
 
-        reference = latest.reference.strip
+        reference = latest.reference.strip()
 
         try:
             reference = InvenTree.format.extract_named_group(
@@ -531,6 +532,96 @@ class InvenTreePermissionCheckMixin:
         return user.has_perm(perm)
 
 
+class InvenTreeAuditMixin:
+    """Opt a model in to the audit log (field-level change history).
+
+    Any concrete model which inherits from this mixin is registered with django-auditlog
+    when the 'audit' app is loaded (see audit.registry).
+
+    Attributes:
+        AUDIT_INCLUDE_FIELDS: If specified, *only* these fields are recorded (e.g. user-editable fields of a cache model)
+        AUDIT_EXCLUDE_FIELDS: Fields which are never recorded (merged with a base set, see audit.registry)
+        AUDIT_MASK_FIELDS: Fields whose values are masked (the change is recorded, the value is not)
+        AUDIT_M2M_FIELDS: Many-to-many fields which are tracked
+        AUDIT_PARENT_FIELD: Name of the field which links to the "parent" object (e.g. 'order' for a line item)
+        AUDIT_VIEW_RESTRICTION: Restrict reading audit history to 'staff' or 'superuser' users (or None)
+        AUDIT_REQUIRE_PARENT_PERMISSION: Entries are only visible to users who can view the *parent* model
+            (for models whose access is determined by the linked object, e.g. attachments)
+        AUDIT_EVENT_TYPES: Enumeration of named event types which can be recorded against this model
+            (e.g. StockHistoryCode) - see audit.helpers.audit_event
+    """
+
+    AUDIT_INCLUDE_FIELDS: tuple[str, ...] = ()
+    AUDIT_EXCLUDE_FIELDS: tuple[str, ...] = ()
+    AUDIT_MASK_FIELDS: tuple[str, ...] = ()
+    AUDIT_M2M_FIELDS: tuple[str, ...] = ()
+    AUDIT_PARENT_FIELD: Optional[str] = None
+    AUDIT_VIEW_RESTRICTION: Optional[str] = None
+    AUDIT_REQUIRE_PARENT_PERMISSION: bool = False
+    AUDIT_EVENT_TYPES: Optional[type] = None
+
+    def get_audit_parent(self):
+        """Return the "parent" object for audit log entries against this instance.
+
+        Audit entries linked to a parent are included in the history of that parent
+        (e.g. changes to line items are shown against the order).
+        """
+        if self.AUDIT_PARENT_FIELD:
+            return getattr(self, self.AUDIT_PARENT_FIELD, None)
+
+        return None
+
+    def get_audit_parent_reference(self) -> Optional[tuple[Any, str]]:
+        """Return a (ContentType, pk) reference to the "parent" object (or None).
+
+        Override this (rather than get_audit_parent) where the parent can be identified
+        without fetching it from the database (e.g. generic model_type / model_id links).
+        """
+        from django.contrib.contenttypes.models import ContentType
+
+        # Resolve a foreign key parent from its ID, without fetching the related object
+        if self.AUDIT_PARENT_FIELD:
+            field = self._meta.get_field(self.AUDIT_PARENT_FIELD)
+
+            if field.many_to_one or field.one_to_one:
+                parent_id = getattr(self, field.attname)
+
+                if parent_id is None:
+                    return None
+
+                return ContentType.objects.get_for_model(field.related_model), str(
+                    parent_id
+                )
+
+        if parent := self.get_audit_parent():
+            return ContentType.objects.get_for_model(parent), str(parent.pk)
+
+        return None
+
+    def should_audit(self) -> bool:
+        """Return False to skip recording audit entries for this instance.
+
+        Used where only some rows of a model are of interest
+        (e.g. settings which are written automatically by the system).
+        """
+        return True
+
+    def audit_always(self) -> bool:
+        """Return True to record audit entries for this instance, even if the audit log is disabled.
+
+        Used for changes which must always be recorded (e.g. disabling the audit log itself).
+        """
+        return False
+
+    def is_audit_masked(self) -> bool:
+        """Return True if *all* values recorded against this instance must be masked.
+
+        Used where sensitivity depends on the row rather than the field
+        (e.g. a 'protected' setting value).
+        """
+        return False
+
+
 class InvenTreeParameterMixin(InvenTreePermissionCheckMixin, models.Model):
     """Provides an abstracted class for managing parameters.
 
@@ -628,7 +719,9 @@ class InvenTreeParameterMixin(InvenTreePermissionCheckMixin, models.Model):
             parameters.append(parameter)
 
         if len(parameters) > 0:
-            common.models.Parameter.objects.bulk_create(parameters, batch_size=250)
+            from audit.helpers import audited_bulk_create
+
+            audited_bulk_create(common.models.Parameter, parameters)
 
     def get_parameter(self, name: str):
         """Return a Parameter instance for the given parameter name.
@@ -999,7 +1092,12 @@ class InvenTreeTree(ContentTypeMixin, MPTTModel):
         B) delete_children = True and delete_items = False
         C) delete_children = False and delete_items = True
         D) delete_children = False and delete_items = False
+
+        Note: re-parenting uses audited_update(), so that the change is recorded
+        for audited models (it falls back to a plain update() otherwise).
         """
+        from audit.helpers import audited_update
+
         child_nodes = self.get_descendants(include_self=False)
 
         # Case A: Delete all child items, and all child nodes.
@@ -1015,7 +1113,7 @@ class InvenTreeTree(ContentTypeMixin, MPTTModel):
         elif delete_children and not delete_items:
             if items := self.get_items(cascade=True):
                 parent = getattr(self, self.NODE_PARENT_KEY, None)
-                items.update(**{self.ITEM_PARENT_KEY: parent})
+                audited_update(items, **{self.ITEM_PARENT_KEY: parent})
             self.delete_nodes(child_nodes)
 
         # Case C: Delete all child items, but keep all child nodes
@@ -1024,7 +1122,7 @@ class InvenTreeTree(ContentTypeMixin, MPTTModel):
         elif not delete_children and delete_items:
             self.delete_items(cascade=False)
             parent = getattr(self, self.NODE_PARENT_KEY, None)
-            self.get_children().update(**{self.NODE_PARENT_KEY: parent})
+            audited_update(self.get_children(), **{self.NODE_PARENT_KEY: parent})
 
         # Case D: Keep all child items, and keep all child nodes
         # - Move all items directly associated with this node up one level
@@ -1032,8 +1130,8 @@ class InvenTreeTree(ContentTypeMixin, MPTTModel):
         elif not delete_children and not delete_items:
             parent = getattr(self, self.NODE_PARENT_KEY, None)
             if items := self.get_items(cascade=False):
-                items.update(**{self.ITEM_PARENT_KEY: parent})
-            self.get_children().update(**{self.NODE_PARENT_KEY: parent})
+                audited_update(items, **{self.ITEM_PARENT_KEY: parent})
+            audited_update(self.get_children(), **{self.NODE_PARENT_KEY: parent})
 
     def delete_nodes(self, nodes):
         """Delete  a set of nodes from the tree.
@@ -1298,7 +1396,7 @@ class PathStringMixin(models.Model):
             # Update the pathstring values for any lower nodes,
             # by offloading the update to the background worker
             if not rebuild_offloaded and self.get_descendant_count() > 0:
-                self.__class__.offload_tree_rebuild([self.tree_id])
+                self.__class__.offload_tree_rebuild([self.tree_id])  # ty: ignore[invalid-attribute-access]
 
     def delete(self, *args, **kwargs):
         """Custom delete method for PathStringMixin.
@@ -1672,32 +1770,68 @@ def notify_staff_users_of_error(instance, label: str, context: dict):
         logger.error(exc)
 
 
+def _notify_task_failure(func: str, task_id: str, attempt_count: int, result) -> None:
+    """Create a new Error object for a permanently-failed background task.
+
+    This will, in turn, trigger a notification to staff users via the Error post_save signal.
+    """
+    from InvenTree.exceptions import log_error
+
+    message = f"Task '{func} ({task_id})' failed after {attempt_count} attempt{'s' if attempt_count != 1 else ''}"
+
+    logger.error(message)
+
+    log_error(
+        'task_failure',
+        scope='worker',
+        error_name='Task Failure',
+        error_info=message,
+        error_data=str(result) if result else '',
+    )
+
+
 @receiver(post_save, sender=Task, dispatch_uid='failure_post_save_notification')
 def after_failed_task(sender, instance: Task, created: bool, **kwargs):
     """Callback when a new task failure log is generated."""
     from django.conf import settings
-
-    from InvenTree.exceptions import log_error
 
     max_attempts = int(settings.Q_CLUSTER.get('max_attempts', 5))
     n = instance.attempt_count
 
     # Only notify once the maximum number of attempts has been reached
     if not instance.success and n >= max_attempts:
-        # Create a new Error object associated with this failed task
-        # This will, in turn, trigger a notification to staff users via the Error post_save signal
+        _notify_task_failure(instance.func, instance.pk, n, instance.result)
 
-        message = f"Task '{instance.func} ({instance.pk})' failed after {n} attempts"
 
-        logger.error(message)
+@receiver(post_execute, dispatch_uid='failure_post_execute_notification')
+def after_single_shot_task_failure(sender, task: dict, **kwargs):
+    """Callback when a background task finishes executing.
 
-        log_error(
-            'task_failure',
-            scope='worker',
-            error_name='Task Failure',
-            error_info=message,
-            error_data=str(instance.result) if instance.result else '',
-        )
+    A task offloaded with offload_task(..., retry=False) is marked with the
+    'ack_failure' option, which causes the broker to drop it after a single failed
+    attempt (see InvenTree.tasks.offload_task) - its attempt_count will never reach
+    Q_CLUSTER['max_attempts'], so after_failed_task()'s post_save-based check would
+    otherwise never fire a notification for it. This uses django-q2's post_execute
+    signal instead, which (unlike the saved Task record) still carries the
+    'ack_failure' flag, to notify immediately on that task's one and only attempt.
+    """
+    from django.conf import settings
+
+    if task.get('success') or not task.get('ack_failure'):
+        return
+
+    max_attempts = int(settings.Q_CLUSTER.get('max_attempts', 5))
+
+    if max_attempts <= 1:
+        # after_failed_task() already handles this case via its own post_save signal -
+        # avoid notifying twice
+        return
+
+    from django_q.utils import get_func_repr
+
+    _notify_task_failure(
+        get_func_repr(task.get('func')), task.get('id'), 1, task.get('result')
+    )
 
 
 @receiver(post_save, sender=Error, dispatch_uid='error_post_save_notification')

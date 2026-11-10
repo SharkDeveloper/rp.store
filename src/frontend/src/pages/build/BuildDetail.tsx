@@ -38,6 +38,9 @@ import {
 import InstanceDetail from '../../components/nav/InstanceDetail';
 import { PageDetail } from '../../components/nav/PageDetail';
 import AttachmentPanel from '../../components/panels/AttachmentPanel';
+import HistoryPanel, {
+  useShowHistoryPanel
+} from '../../components/panels/HistoryPanel';
 import NotesPanel from '../../components/panels/NotesPanel';
 import { PanelGroup } from '../../components/panels/PanelGroup';
 import ParametersPanel from '../../components/panels/ParametersPanel';
@@ -237,6 +240,8 @@ export default function BuildDetail() {
     modelId: build?.pk
   });
 
+  const showHistory = useShowHistoryPanel();
+
   const buildPanels: PanelType[] = useMemo(() => {
     return [
       {
@@ -335,7 +340,7 @@ export default function BuildDetail() {
           <Skeleton />
         ),
         hidden:
-          !user.hasViewRole(UserRoles.purchase_order) ||
+          !user.hasViewVisible(UserRoles.purchase_order) ||
           !build.external ||
           !globalSettings.isSet('BUILDORDER_EXTERNAL_BUILDS')
       },
@@ -375,6 +380,11 @@ export default function BuildDetail() {
         model_type: ModelType.build,
         model_id: build.pk,
         note_count: instanceInfo.note_count
+      }),
+      HistoryPanel({
+        model_type: ModelType.build,
+        model_id: build.pk,
+        visible: showHistory
       })
     ];
   }, [
@@ -388,7 +398,8 @@ export default function BuildDetail() {
     showChildBuilds,
     buildLineQuery.isFetching,
     buildLineQuery.isLoading,
-    buildLineData
+    buildLineData,
+    showHistory
   ]);
 
   const editBuildOrderFields = useBuildOrderFields({
@@ -402,7 +413,6 @@ export default function BuildDetail() {
     title: t`Edit Build Order`,
     modalId: 'edit-build-order',
     fields: editBuildOrderFields,
-    queryParams: new URLSearchParams({ tags: 'true' }),
     onFormSuccess: refreshInstance
   });
 
@@ -575,6 +585,7 @@ export default function BuildDetail() {
           />,
           <DetailsBadge
             label={t`External`}
+            tooltip={t`This build order is fulfilled by an external supplier`}
             color='blue'
             key='external'
             visible={build.external}
@@ -593,6 +604,8 @@ export default function BuildDetail() {
       <InstanceDetail query={instanceQuery} requiredRole={UserRoles.build}>
         <Stack gap='xs'>
           <PageDetail
+            model={ModelType.build}
+            id={build.pk}
             title={`${t`Build Order`}: ${build.reference}`}
             subtitle={`${build.quantity} x ${build.part_detail?.full_name}`}
             badges={buildBadges}

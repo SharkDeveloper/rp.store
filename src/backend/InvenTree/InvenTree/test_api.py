@@ -1,20 +1,31 @@
 """Low level tests for the InvenTree API."""
 
+import hashlib
+import hmac
 from base64 import b64encode
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.exceptions import AppRegistryNotReady
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from oauth2_provider.models import Application
 from rest_framework import status
 
+from common.models import InvenTreeSetting
+from common.settings import set_global_setting
 from InvenTree.api import read_license_file
 from InvenTree.api_version import INVENTREE_API_VERSION
+from InvenTree.apps import DEFAULT_OIDC_APP_ID
 from InvenTree.exceptions import exception_handler
-from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase
+from InvenTree.proof import calculate_proof
+from InvenTree.unit_test import InvenTreeAPITestCase, InvenTreeTestCase, in_env_context
 from InvenTree.version import inventreeApiText, parse_version_text
 from users.models import ApiToken
 from users.ruleset import RULESET_NAMES
@@ -90,6 +101,179 @@ class ExceptionHandlerTests(TestCase):
         self.assertEqual(response['Retry-After'], '1')
 
 
+@override_settings(
+    SITE_URL='http://testserver', CSRF_TRUSTED_ORIGINS=['http://testserver']
+)
+class OAuth2ApplicationAPITests(InvenTreeAPITestCase):
+    """Tests for the built-in OIDC application metadata and deletion guard."""
+
+    superuser = True
+
+    def test_builtin_client_metadata_and_delete_block(self):
+        """The built-in default OIDC client should be flagged and protected from deletion."""
+        Application.objects.filter(client_id=DEFAULT_OIDC_APP_ID).delete()
+        built_in = Application.objects.create(
+            name='Built-In OIDC Client',
+            client_id=DEFAULT_OIDC_APP_ID,
+            client_secret='secret',
+            redirect_uris='https://example.com/callback',
+            client_type=Application.CLIENT_PUBLIC,
+            authorization_grant_type=Application.GRANT_AUTHORIZATION_CODE,
+            algorithm=Application.RS256_ALGORITHM,
+        )
+
+        response = self.get(reverse('api-oauth2-list'))
+        payload = response.json()
+        self.assertTrue(
+            any(
+                item['client_id'] == DEFAULT_OIDC_APP_ID and item['is_builtin']
+                for item in payload
+            )
+        )
+
+        # no delete
+        response = self.delete(
+            reverse('api-oauth2-detail', kwargs={'pk': built_in.pk}), expected_code=403
+        )
+        self.assertTrue(Application.objects.filter(pk=built_in.pk).exists())
+
+        # no secret regeneration
+        self.post(
+            reverse('api-oauth2-regenerate', kwargs={'pk': built_in.pk}),
+            expected_code=403,
+        )
+
+    def test_create_application(self):
+        """An admin should be able to create a custom OAuth2 application."""
+        payload = {
+            'name': 'Custom OAuth App',
+            'client_type': Application.CLIENT_PUBLIC,
+            'authorization_grant_type': Application.GRANT_AUTHORIZATION_CODE,
+            'redirect_uris': 'https://example.com/callback',
+            'post_logout_redirect_uris': 'https://example.com/logout',
+            'skip_authorization': False,
+            'algorithm': Application.RS256_ALGORITHM,
+        }
+        response = self.post(
+            reverse('api-oauth2-list'), payload, expected_code=201, format='json'
+        )
+
+        self.assertTrue(Application.objects.filter(name='Custom OAuth App').exists())
+        payload = response.json()
+        self.assertIn('client_id', payload)
+        secret_1 = payload['client_secret']
+        assert secret_1 is not None
+        self.assertNotEqual(secret_1, '')
+        self.assertFalse(secret_1.startswith('pbkdf2_sha256$'))
+
+        # repeated GET should not return the plaintext secret
+        response = self.get(reverse('api-oauth2-detail', kwargs={'pk': payload['id']}))
+        payload = response.json()
+        self.assertIn('client_id', payload)
+        self.assertNotIn('client_secret', payload)
+
+        # regenerating the secret should return a new plaintext secret
+        response = self.post(
+            reverse('api-oauth2-regenerate', kwargs={'pk': payload['id']}),
+            expected_code=200,
+        )
+        result = response.json()
+        secret_2 = result['client_secret']
+        assert secret_2 is not None
+        self.assertFalse(secret_2.startswith('pbkdf2_sha256$'))
+        self.assertNotEqual(secret_1, secret_2)
+
+    def test_oauth2_application_token_can_access_profile(self):
+        """A custom OAuth2 client should be able to use a valid token to read the current profile."""
+        payload = {
+            'name': 'Profile OAuth App',
+            'client_type': Application.CLIENT_CONFIDENTIAL,
+            'authorization_grant_type': Application.GRANT_AUTHORIZATION_CODE,
+            'redirect_uris': 'https://example.com/callback',
+            'post_logout_redirect_uris': 'https://example.com/logout',
+            'skip_authorization': False,
+            'algorithm': Application.RS256_ALGORITHM,
+        }
+        response = self.post(
+            reverse('api-oauth2-list'), payload, expected_code=201, format='json'
+        )
+
+        app = response.json()
+        client_id = app['client_id']
+        client_secret = app['client_secret']
+        challenge_verifier = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
+        code_challenge = (
+            __import__('base64')
+            .urlsafe_b64encode(
+                hashlib.sha256(challenge_verifier.encode('utf-8')).digest()
+            )
+            .rstrip(b'=')
+            .decode('ascii')
+        )
+        auth_params = {
+            'client_id': client_id,
+            'redirect_uri': 'https://example.com/callback',
+            'response_type': 'code',
+            'scope': 'openid g:read',
+            'state': 'abc123',
+            'code_challenge': code_challenge,
+            'code_challenge_method': 'S256',
+        }
+
+        self.logout()
+        response = self.get(reverse('api-user-profile'), expected_code=401)
+
+        self.login()
+        response = self.get(reverse('oauth2_provider:authorize'), auth_params)
+
+        response = self.post(
+            reverse('oauth2_provider:authorize'),
+            {**auth_params, 'allow': 'true'},
+            format=None,
+            expected_code=302,
+        )
+        self.assertIn('code=', response['Location'])
+        code = parse_qs(urlsplit(response['Location']).query)['code'][0]
+
+        response = self.post(
+            reverse('oauth2_provider:token'),
+            urlencode({
+                'grant_type': 'authorization_code',
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'code': code,
+                'redirect_uri': 'https://example.com/callback',
+                'code_verifier': challenge_verifier,
+            }),
+            format=None,
+            content_type='application/x-www-form-urlencoded',
+            expected_code=200,
+        )
+        token_data = response.json()
+        self.assertIn('access_token', token_data)
+        access_token = token_data['access_token']
+
+        self.logout()
+        response = self.get(
+            reverse('api-user-profile'), HTTP_AUTHORIZATION=f'Bearer {access_token}'
+        )
+        profile = response.json()
+        self.assertIn('language', profile)
+        self.assertIn('theme', profile)
+        self.assertIn('widgets', profile)
+
+        # The token is limited to its (read) scope - even with a matching CSRF cookie / header
+        self.client.cookies['csrftoken'] = 'A' * 32
+        response = self.patch(
+            reverse('api-user-detail', kwargs={'pk': self.user.pk}),
+            {'first_name': 'Changed'},
+            HTTP_AUTHORIZATION=f'Bearer {access_token}',
+            HTTP_X_CSRFTOKEN='A' * 32,
+            expected_code=403,
+        )
+
+
+@override_settings(BASIC_AUTH_ENABLED=True)
 class ApiAccessTests(InvenTreeAPITestCase):
     """Tests for various access scenarios with the InvenTree API."""
 
@@ -126,6 +310,14 @@ class ApiAccessTests(InvenTreeAPITestCase):
         url = reverse('api-token')
         self.get(url, expected_code=401)
         self.assertIsNone(self.token)
+
+    @override_settings(BASIC_AUTH_ENABLED=False)
+    def test_basic_auth_disabled(self):
+        """Test that basic auth is rejected if it is disabled."""
+        self.basicAuth()
+        response = self.get(reverse('api-token'), expected_code=401)
+        self.assertNotIn('Basic', response.get('WWW-Authenticate', ''))
+        self.get(reverse('api-user-roles'), expected_code=401)
 
     def test_token_success(self):
         """Test token auth works."""
@@ -692,9 +884,14 @@ class GeneralApiTests(InvenTreeAPITestCase):
         self.assertIn('instance', data)
 
         self.assertEqual('InvenTree', data['server'])
+        self.assertTrue(data['system_state']['basic_auth_enabled'])
+
+        with override_settings(BASIC_AUTH_ENABLED=False):
+            data = self.get(url, max_query_count=20).json()
+            self.assertFalse(data['system_state']['basic_auth_enabled'])
 
         # Test with token
-        token = self.get(url=reverse('api-token'), max_query_count=20).data['token']
+        token = self.get(url=reverse('api-token'), max_query_count=40).data['token']
         self.client.logout()
 
         # Anon
@@ -705,7 +902,7 @@ class GeneralApiTests(InvenTreeAPITestCase):
 
         # Staff
         response = self.get(
-            url, headers={'Authorization': f'Token {token}'}, max_query_count=20
+            url, headers={'Authorization': f'Token {token}'}, max_query_count=40
         )
         self.assertIsNotNone(data.get('active_plugins'))
         self.assertGreater(len(response.json()['database']), 4)
@@ -731,6 +928,65 @@ class GeneralApiTests(InvenTreeAPITestCase):
         self.assertIn('bom-exporter', keys)
         self.assertIn('inventree-ui-notification', keys)
         self.assertIn('inventreelabel', keys)
+
+    def test_info_view_link(self):
+        """Test the link proof in the 'info-view' endpoint."""
+        instance_id = 'c0ffee00-1234-4abc-8def-0123456789ab'
+        set_global_setting('INVENTREE_INSTANCE_ID', instance_id)
+        self.client.logout()
+        url = reverse('api-inventree-info')
+
+        prk = hmac.new(b'\x00' * 32, instance_id.encode(), hashlib.sha256).digest()
+        key = hmac.new(prk, b'inventree-link-v1\x01', hashlib.sha256).digest()
+        expected = hmac.new(key, b'2026-10abc_DEF-123', hashlib.sha256).hexdigest()
+        self.assertEqual(expected[:32], '301acdcf01baec22a4f2f5391a55d002')
+
+        # overwrite time
+        with mock.patch('InvenTree.proof.dt', wraps=datetime) as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 10, 14, tzinfo=timezone.utc)
+            response = self.client.get(url, {'link_nonce': 'abc_DEF-123'})
+
+        data = response.json()
+        self.assertEqual(data['link'], expected[:32])
+        self.assertIsNone(data['id'])
+        self.assertNotIn(instance_id, response.content.decode())
+
+        self.assertNotIn('link', self.client.get(url).json())
+
+        set_global_setting('INVENTREE_LINK_PROOF', False)
+        response_data = self.client.get(url, {'link_nonce': 'abc'}).json()
+        self.assertIsNone(response_data['link'])
+
+    def test_link_proof(self):
+        """Test the link proof helper."""
+        set_global_setting('INVENTREE_INSTANCE_ID', 'abc')
+
+        # overwrite time
+        with mock.patch('InvenTree.proof.dt', wraps=datetime) as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 10, 1, tzinfo=timezone.utc)
+            link = calculate_proof('nonce')
+            self.assertEqual(len(link), 32)
+            self.assertEqual(link, calculate_proof('nonce'))
+            self.assertNotEqual(link, calculate_proof('other'))
+            self.assertIsNotNone(calculate_proof('a' * 64))
+
+            # broken data scenarios
+            for nonce in [None, '', 'a' * 65, 'a.b', 'a b', 'abc\n', '\u00e4']:
+                self.assertIsNone(calculate_proof(nonce), nonce)
+
+            with in_env_context({'INVENTREE_LINK_PROOF': 'False'}):
+                self.assertIsNone(calculate_proof('nonce'))
+
+            mock_dt.now.return_value = datetime(2026, 11, 1, tzinfo=timezone.utc)
+            self.assertNotEqual(link, calculate_proof('nonce'))
+
+        # missing id is not created; proof is not provided
+        InvenTreeSetting.objects.filter(key='INVENTREE_INSTANCE_ID').delete()
+        cache.clear()
+        self.assertIsNone(calculate_proof('nonce'))
+        self.assertFalse(
+            InvenTreeSetting.objects.filter(key='INVENTREE_INSTANCE_ID').exists()
+        )
 
     def test_generic_metadata_lookup_field_injection(self):
         """The generic metadata endpoint must not accept arbitrary lookup expressions.
